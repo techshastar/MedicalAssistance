@@ -12,7 +12,7 @@ package.domain = org.medicineassistant.app
 source.dir = .
 source.include_exts = py,png,jpg,kv,ttf,txt,md
 
-version = 0.5
+version = 0.6
 
 # Pure-python requirements only (sqlite3 is built into Android Python).
 # pyjnius comes automatically with kivy (used for Android TTS + ML Kit OCR).

@@ -43,8 +43,9 @@ STRINGS = {
     "invalid_number":   {"en": "That number is not on the list - going back to the menu.",
                          "hi": "वह नंबर सूची में नहीं है - मुख्य मेनू पर वापस।"},
     "exact_tag":        {"en": "EXACT MATCH", "hi": "पूर्ण मिलान (EXACT)"},
-    "possible_tag":     {"en": "possible - confirm on pack",
-                         "hi": "संभावित - packet पर जाँचें"},
+    "possible_tag":     {"en": "POSSIBLE", "hi": "संभावित"},
+    "possible_note":    {"en": "Possible match - please confirm the printed name on the pack.",
+                         "hi": "संभावित मिलान - कृपया packet पर छपा नाम ज़रूर जाँचें।"},
     "very_close":       {"en": "very close spelling", "hi": "लगभग वही spelling"},
     "pct_similar":      {"en": "{n}% similar", "hi": "{n}% मिलता-जुलता"},
     "list_header":      {"en": "{n} medicine(s) in the local database:", "hi": "स्थानीय डेटाबेस में {n} दवाएँ:"},
@@ -300,6 +301,71 @@ STRINGS = {
     "stor_tips":        {"en": "1. Keep medicines in a cool, dry place - away from sunlight and the bathroom's dampness.\n\n2. Only syrups/drops that say so on the label go in the fridge - not every medicine.\n\n3. Keep everything out of children's reach, in a locked or high cabinet.\n\n4. Never store medicines near the kitchen stove or a window - heat damages them.\n\n5. Keep tablets in their original strip/bottle with the name and expiry visible.",
                          "hi": "1. दवाएं ठंडी, सूखी जगह रखें - धूप और बाथरूम की नमी से दूर।\n\n2. केवल वही syrup/drops fridge में रखें जिनके label पर लिखा हो - हर दवा नहीं।\n\n3. सभी दवाएं बच्चों की पहुँच से दूर, ऊँची या बंद अलमारी में रखें।\n\n4. चूल्हे या खिड़की के पास दवाएं न रखें - गर्मी से खराब होती हैं।\n\n5. गोलियाँ उनकी असली strip/बोतल में रखें जिस पर नाम और expiry दिखे।"},
 }
+
+
+# =====================================================================
+# v0.6 - professional-pass keys (toasts, scan screen, details actions,
+# short expiry chips, back button, topbar tagline)
+# =====================================================================
+STRINGS.update({
+    # ---- generic action feedback (toasts) ----
+    "saved_done":        {"en": "Saved", "hi": "सेव हो गया"},
+    "deleted_done":      {"en": "Deleted", "hi": "हटा दिया गया"},
+    "rem_saved":         {"en": "Reminder saved", "hi": "Reminder सेव हो गया"},
+    "rem_on_msg":        {"en": "Reminder is ON", "hi": "Reminder चालू है"},
+    "rem_off_msg":       {"en": "Reminder is OFF", "hi": "Reminder बंद है"},
+    "cab_added":         {"en": "Added to your cabinet", "hi": "Cabinet में जोड़ दी गई"},
+    "qty_updated":       {"en": "Quantity updated", "hi": "मात्रा अपडेट हो गई"},
+    "member_added":      {"en": "Member added", "hi": "सदस्य जोड़ दिया गया"},
+    "lang_changed":      {"en": "Language updated", "hi": "भाषा बदल गई"},
+    "cancelled":         {"en": "Cancelled.", "hi": "रद्द किया।"},
+
+    # ---- topbar / back ----
+    "topbar_sub":        {"en": "OFFLINE  •  PRIVATE  •  FREE",
+                          "hi": "ऑफ़लाइन  •  निजी  •  मुफ़्त"},
+    "back_btn":          {"en": "Back", "hi": "वापस"},
+
+    # ---- details action row + share ----
+    "btn_listen":        {"en": "LISTEN", "hi": "सुनें"},
+    "btn_stop":          {"en": "STOP", "hi": "रोकें"},
+    "btn_share":         {"en": "SHARE", "hi": "शेयर"},
+    "add_to_cab":        {"en": "+ Cabinet", "hi": "+ Cabinet"},
+    "share_note":        {"en": "Shared from Medicine Assistant (offline app)\nNOTE: General info only - not medical advice.\n\n",
+                          "hi": "Medicine Assistant (offline ऐप) से share किया\nध्यान दें: केवल सामान्य जानकारी - medical सलाह नहीं।\n\n"},
+    "share_app_only":    {"en": "(Share works inside the Android app.)",
+                          "hi": "(Share Android ऐप में चलता है।)"},
+
+    # ---- expired banner on details ----
+    "expired_go":        {"en": "EXPIRED - DO NOT USE THIS MEDICINE",
+                          "hi": "समाप्त - इस दवा का उपयोग न करें"},
+    "expired_get_fresh": {"en": "Please get a fresh supply - ask a pharmacist/doctor.",
+                          "hi": "कृपया नई दवा लें - फार्मासिस्ट/डॉक्टर से पूछें।"},
+
+    # ---- scan screen ----
+    "or_type_pack":      {"en": "OR TYPE THE PACK TEXT",
+                          "hi": "या packet का text लिखें"},
+    "check_expiry_btn":  {"en": "Check expiry", "hi": "Expiry जाँचें"},
+    "scan_no_known":     {"en": "NO KNOWN MEDICINE FOUND",
+                          "hi": "कोई जानी दवा नहीं मिली"},
+    "scan_text_read":    {"en": "TEXT THAT WAS READ", "hi": "जो text पढ़ा गया"},
+    "scan_gallery_sub":  {"en": "From gallery - the photo is never saved,\nit is scanned fully on this device",
+                          "hi": "Gallery से - फोटो कभी save नहीं होती,\nइसी फ़ोन पर स्कैन होती है"},
+    "scan_app_only":     {"en": "Photo scan works inside the Android app.",
+                          "hi": "फोटो स्कैन Android ऐप में चलता है।"},
+    "scan_text_ok":      {"en": "OK - text received - results below.",
+                          "hi": "OK - text मिल गया - results नीचे।"},
+    "scan_text_empty":   {"en": "Text is empty.", "hi": "Text खाली है।"},
+
+    # ---- history ----
+    "hist_note":         {"en": "Text only - photos are never stored.",
+                          "hi": "Sirf text - फोटो कभी save नहीं होती।"},
+    "go_short":          {"en": "Search", "hi": "खोजें"},
+
+    # ---- short expiry chips (tight rows) ----
+    "exp_active_short":  {"en": "Active", "hi": "सही"},
+    "exp_soon_short":    {"en": "Soon", "hi": "जल्द"},
+    "exp_expired_short": {"en": "Expired", "hi": "समाप्त"},
+})
 
 
 def t(key: str, language: str = EN, **format_values) -> str:

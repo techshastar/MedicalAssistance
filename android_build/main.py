@@ -1,21 +1,18 @@
 """
-main.py (ANDROID / Kivy) — Medicine Assistant APK v0.5
+main.py (ANDROID / Kivy) — Medicine Assistant APK v0.6
 ======================================================
 Professional health-suite UI (teal + mint theme), SIH build.
 
-New in v0.5:
-  * Home dashboard: greeting, dose status pill, suggestion search bar,
-    upcoming dose card (Take Now / Snooze), quick actions grid,
-    bottom navigation + Add/Scan button
-  * Medicine Cabinet: quantity, dosage, expiry, storage place per medicine
-  * Reminders: daily dose times per family member, SPOKEN voice reminders
-    while the app is open (Take Now / Snooze 15m)
-  * Family Care: manage whose medicines you look after
-  * Expiry dashboard: active / expiring soon / expired, with voice summary
-  * Authenticity checklist + Storage guide (education only)
-  * Explanation levels on the details page: simple / normal / detailed
-  * Voice search (Android SpeechRecognizer, graceful fallback)
-  * Dark mode, user name, language — saved locally on-device
+v0.6 "final polish" pass:
+  * NO clipped/spilling text anywhere: every button shortens with an
+    ellipsis inside its own box, wrapped labels auto-size to content
+  * Details actions split into two calm rows; tight chip rows fit
+    small screens (short bilingual labels)
+  * Professional motion: slide screen transitions, staggered card
+    rise-ins, button press feedback, bottom-sheets slide up, pulsing
+    "dose due" indicator, and a clean toast system for confirmations
+  * All remaining hardcoded strings moved to the language dictionary
+    (full English + Hindi parity)
 
 Same honest backend: 100% offline, no accounts, no tracking, photos
 never stored, and the app NEVER guesses medicines.
@@ -29,7 +26,10 @@ from kivy.uix.gridlayout import GridLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.scrollview import ScrollView
-from kivy.uix.screenmanager import Screen, ScreenManager, FadeTransition
+from kivy.uix.screenmanager import (Screen, ScreenManager, FadeTransition,
+                                    SlideTransition)
+from kivy.animation import Animation
+from kivy.core.text import Label as CoreLabel
 from kivy.uix.textinput import TextInput
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.relativelayout import RelativeLayout
@@ -99,7 +99,11 @@ from medicine.information import (format_details_page,
                                   format_authenticity_checklist,
                                   build_spoken_summary,
                                   build_reminder_spoken,
-                                  build_cabinet_spoken_summary)
+                                  build_cabinet_spoken_summary,
+                                  WARNING_FIELDS, DISCLAIMER, DISCLAIMER_HI,
+                                  URGENT_NOTE, URGENT_NOTE_HI, NOT_AVAILABLE,
+                                  LV_SIMPLE, LV_NORMAL, LV_DETAILED)
+from utils.simple_language import explain_in_simple_words
 from utils.languages import t, EN, HI
 from utils.date_utils import extract_packaging_info
 from utils.suggestions import get_suggestions
@@ -165,7 +169,70 @@ def _darken(rgba, k=0.85):
 
 RESULT_OK = -1
 _PICK_IMAGE_REQUEST = 9101
-APP_VERSION = "v0.5"
+APP_VERSION = "v0.6"
+
+
+# =====================================================================
+# Motion helpers (professional, subtle, GL-safe: only y / opacity)
+# =====================================================================
+def _after_frames(fn, n=2):
+    """Run `fn` shortly after now (~n frames at 60 fps) on WALL CLOCK.
+
+    Why not real frame counting: Kivy's mainloop IDLES (very few frames)
+    when nothing animates, so frame-counted waits can hang for seconds and
+    leave widgets hidden (found during v0.6 testing). Wall-clock
+    schedule_once always wakes the clock on time.
+    """
+    Clock.schedule_once(lambda _dt: fn(), 0.04 * n)
+
+
+def _rise_in(w, i=0, base=0.045):
+    """Staggered FADE-in for one widget.
+
+    Fade-only, never position: animating `y` fights BoxLayout's continuous
+    positioning, and if a screen is built while it is 100x100 (ScreenManager
+    keeps non-current screens tiny) the captured positions are garbage and
+    the content gets parked off-screen (found during v0.6 testing).
+    """
+    w.opacity = 0
+
+    def _start():
+        Animation.stop_all(w, "opacity")
+        Animation(opacity=1, d=0.16 + min(i, 6) * base,
+                  t="out_cubic").start(w)
+    _after_frames(_start, 1)
+
+
+def stagger_children(container, base=0.045):
+    """Staggered rise-in for a layout's children, TOP-to-BOTTOM order."""
+    kids = list(reversed(container.children))
+    for i, w in enumerate(kids):
+        _rise_in(w, i, base)
+
+
+def press_feedback(w, dim=0.72, up_d=0.18):
+    """Attach a gentle opacity dip on press for any ButtonBehavior."""
+
+    def _down(*_):
+        Animation.stop_all(w, "opacity")
+        Animation(opacity=dim, d=0.07).start(w)
+
+    def _up(*_):
+        Animation.stop_all(w, "opacity")
+        Animation(opacity=1.0, d=up_d).start(w)
+
+    w.bind(on_press=_down, on_release=_up, on_cancel=_up)
+
+
+def measure_text(msg, fs, wrap_width=None):
+    """Exact (w, h) of a string rendered in our font (CoreLabel)."""
+    cl = CoreLabel(text=msg, font_name=FONT, font_size=dp(fs))
+    if wrap_width is not None:
+        cl = CoreLabel(text=msg, font_name=FONT, font_size=dp(fs),
+                       text_size=(wrap_width, None), halign="center")
+    cl.refresh()
+    tw, th = cl.texture.size
+    return tw, th
 
 
 # =====================================================================
@@ -177,15 +244,40 @@ def txt(s, fs=13, color=None, bold=False, wrap=False, halign="left",
 
     text_size is ALWAYS tied to the widget width so `halign` really works
     (Kivy ignores halign without text_size). Single-line labels shorten with
-    an ellipsis instead of spilling out of their box.
+    an ellipsis instead of spilling out of their box. Wrapped labels get a
+    roomier line height (Devanagari glyphs are tall).
     """
     color = color or PAL["ink"]
     lbl = Label(text=s, font_size=dp(fs * 1.22), color=color, bold=bold,
                 font_name=FONT, halign=halign, valign=valign, **kw)
-    if not wrap:
+    if wrap:
+        lbl.line_height = 1.12
+    else:
         lbl.shorten = True
         lbl.shorten_from = "right"
     lbl.bind(width=lambda w, v: setattr(lbl, "text_size", (v, None)))
+    if lbl.width:  # explicit kwarg width: bind won't re-fire, set it now
+        lbl.text_size = (lbl.width, None)
+    return lbl
+
+
+def auto_txt(s, fs=13, color=None, bold=False, halign="left", valign="top",
+             min_h=None, extra=dp(6), **kw):
+    """Wrapped label whose HEIGHT follows the wrapped text itself.
+
+    Use this for any multi-line text that used to sit in a fixed-height box
+    and risk being clipped on small screens.
+    """
+    kw.setdefault("size_hint_y", None)
+    lbl = txt(s, fs, color, bold, wrap=True, halign=halign, valign=valign,
+              **kw)
+
+    def _h(w, sz):
+        h = sz[1] + extra
+        if min_h is not None:
+            h = max(h, min_h)
+        w.height = h
+    lbl.bind(texture_size=_h)
     return lbl
 
 
@@ -221,6 +313,16 @@ class RoundedButton(Button):
         self.background_disabled_normal = ""
         self.background_disabled_down = ""
         self.background_color = (0, 0, 0, 0)
+        # PRO-FIX (v0.6): plain Kivy Buttons have NO text_size, so long text
+        # spills OUT of the button borders. Tie text_size to our width and
+        # shorten with an ellipsis - text can never leak out again.
+        self.shorten = True
+        self.shorten_from = "right"
+        self.halign = "center"
+        self.valign = "middle"
+        self.bind(width=self._fit_text)
+        self._fit_text()
+        press_feedback(self)
         with self.canvas.before:
             self._c = Color(rgba=self._shown_bg())
             self._rr = RoundedRectangle(pos=self.pos, size=self.size,
@@ -234,6 +336,14 @@ class RoundedButton(Button):
         self.bind(pos=self._sync, size=self._sync,
                   state=lambda *_: self._repaint(),
                   disabled=lambda *_: self._repaint())
+
+    def _fit_text(self, *_):
+        # while width is unknown (0) leave text unconstrained so widgets
+        # that size themselves by texture (member chips) can measure
+        if self.width > 1:
+            self.text_size = (self.width - dp(20), None)
+        else:
+            self.text_size = (None, None)
 
     def _shown_bg(self):
         if self.disabled:
@@ -306,10 +416,58 @@ class TintCard(Card):
 
 
 class CardButton(ButtonBehavior, Card):
-    """A card you can tap."""
+    """A card you can tap (with a subtle press dip)."""
 
     def __init__(self, text=None, **kw):
         super().__init__(**kw)
+        press_feedback(self, dim=0.8, up_d=0.22)
+
+
+class BottomSheet(ModalView):
+    """Shared bottom-sheet base: dimmed backdrop + slide-up open animation."""
+
+    SHEET_HEIGHT = dp(420)
+
+    def __init__(self, app, **kw):
+        super().__init__(**kw)
+        self.app = app
+        self.size_hint = (1, None)
+        self.height = self.SHEET_HEIGHT
+        self.background = ""
+        self.overlay_color = (0, 0, 0, 0.48)
+        self.anchor_y = "bottom"
+        self.auto_dismiss = True
+        self._sheet_card = None
+
+    def open(self, *a, **kw):
+        super().open(*a, **kw)
+        card = self._sheet_card
+        if card is not None:
+            def _slide():
+                Animation.stop_all(card, "y", "opacity")
+                fin = card.y
+                card.y = fin - dp(70)
+                card.opacity = 0
+                Animation(y=fin, opacity=1, d=0.26, t="out_cubic").start(card)
+            _after_frames(_slide, 2)
+
+
+class _CloseXButton(RoundedButton):
+    """Shared round 'X' close button for sheet headers."""
+
+    def __init__(self, sheet, **kw):
+        super().__init__("X", bg=PAL["track"], fg=PAL["muted"], fs=12,
+                         size_hint=(None, None), size=(dp(36), dp(32)),
+                         radius=16, **kw)
+        self.bind(on_release=lambda *_: sheet.dismiss())
+
+
+def sheet_head(title_text, sheet, fs=16, height=dp(28), color=None):
+    """Title row for bottom sheets: [title .... X]"""
+    head = BoxLayout(size_hint_y=None, height=height)
+    head.add_widget(txt(title_text, fs, color or PAL["ink"], True))
+    head.add_widget(_CloseXButton(sheet))
+    return head
 
 
 class Avatar(RelativeLayout):
@@ -383,6 +541,13 @@ class Icon(RelativeLayout):
         u = self._VBOX / 22.0
         cx = cy = self._VBOX / 2.0          # centre of the virtual 100x100 box
         C = self.color
+
+        def _karc(ax, ay, r, m0, m1):
+            # Kivy's Line(circle=...) computes x=r*sin(a), y=r*cos(a), i.e.
+            # its angles are ROTATED vs standard math angles (0=east, CCW).
+            # We author glyphs in math angles; convert here:
+            # math [m0..m1]  ->  kivy [90-m1 .. 90-m0]
+            return (ax, ay, r, 90.0 - m1, 90.0 - m0)
         with self.canvas.before:
             PushMatrix()
             self._sc = Scale(1.0, 1.0, 1.0)
@@ -413,7 +578,7 @@ class Icon(RelativeLayout):
             elif self.kind == "bell":
                 # dome: top arc of a circle (25deg..155deg), then side walls,
                 # flared base, top knob and clapper. circle=(cx, cy, r, a0, a1)
-                Line(circle=(cx, cy + 0.2 * u, 5.0 * u, 25, 155), width=1.6 * u)
+                Line(circle=_karc(cx, cy + 0.2 * u, 5.0 * u, 25, 155), width=1.6 * u)
                 Line(points=[cx - 4.5 * u, cy + 2.3 * u,
                              cx - 5.8 * u, cy - 3.4 * u], width=1.6 * u)
                 Line(points=[cx + 4.5 * u, cy + 2.3 * u,
@@ -440,15 +605,17 @@ class Icon(RelativeLayout):
                 Line(points=[cx + 3 * u, cy + 8 * u, cx + 3 * u, cy + 4 * u], width=1.6 * u)
             elif self.kind == "person":
                 Line(circle=(cx, cy + 3.2 * u, 3.4 * u), width=1.6 * u)
-                Line(circle=(cx, cy - 5.4 * u, 5.6 * u, 15, 165), width=1.6 * u)
+                Line(circle=_karc(cx, cy - 5.4 * u, 5.6 * u, 15, 165), width=1.6 * u)
             elif self.kind == "mic":
-                RoundedRectangle(pos=(cx - 2.6 * u, cy - 1 * u),
-                                 size=(5.2 * u, 9 * u), radius=[2.6 * u],
-                                 width=1.6 * u)
-                Line(circle=(cx, cy - 0.6 * u, 5.0 * u, 200, 340), width=1.6 * u)
-                Line(points=[cx, cy - 5 * u, cx, cy - 8 * u], width=1.6 * u)
-                Line(points=[cx - 3 * u, cy - 8 * u, cx + 3 * u, cy - 8 * u],
-                     width=1.6 * u)
+                # classic microphone: FILLED capsule head, cradle arc wraps
+                # around its lower third, stand + foot below
+                RoundedRectangle(pos=(cx - 2.4 * u, cy - 2.6 * u),
+                                 size=(4.8 * u, 9.2 * u), radius=[2.4 * u])
+                Line(circle=_karc(cx, cy - 1.6 * u, 5.8 * u, 200, 340),
+                     width=1.7 * u)
+                Line(points=[cx, cy - 7.2 * u, cx, cy - 9.4 * u], width=1.7 * u)
+                Line(points=[cx - 2.4 * u, cy - 9.4 * u,
+                             cx + 2.4 * u, cy - 9.4 * u], width=1.7 * u)
             elif self.kind == "camera":
                 Line(rounded_rectangle=(cx - 7 * u, cy - 5 * u, 14 * u, 10 * u,
                                         2 * u), width=1.6 * u)
@@ -467,9 +634,9 @@ class Icon(RelativeLayout):
             elif self.kind == "family":
                 Line(circle=(cx - 3.6 * u, cy + 2.6 * u, 2.8 * u), width=1.5 * u)
                 Line(circle=(cx + 3.6 * u, cy + 2.6 * u, 2.8 * u), width=1.5 * u)
-                Line(circle=(cx - 3.8 * u, cy - 4.4 * u, 4.0 * u, 15, 165),
+                Line(circle=_karc(cx - 3.8 * u, cy - 4.4 * u, 4.0 * u, 15, 165),
                      width=1.5 * u)
-                Line(circle=(cx + 3.8 * u, cy - 4.4 * u, 4.0 * u, 15, 165),
+                Line(circle=_karc(cx + 3.8 * u, cy - 4.4 * u, 4.0 * u, 15, 165),
                      width=1.5 * u)
             elif self.kind == "shield":
                 Line(points=[cx, cy + 7 * u, cx + 6 * u, cy + 4.4 * u,
@@ -539,6 +706,7 @@ class IconButton(ButtonBehavior, FloatLayout):
         inner.pos_hint = {"center_x": .5, "center_y": .5}
         self.add_widget(inner)
         self.inner = inner
+        press_feedback(self, dim=0.6, up_d=0.2)
 
 
 class _NavBtn(ButtonBehavior, BoxLayout):
@@ -546,6 +714,7 @@ class _NavBtn(ButtonBehavior, BoxLayout):
 
     def __init__(self, **kw):
         super().__init__(orientation="vertical", spacing=0, **kw)
+        press_feedback(self, dim=0.6, up_d=0.2)
 
 
 class _Dot(Widget):
@@ -633,7 +802,7 @@ class TopBar(BoxLayout):
         self.add_widget(logo)
         col = BoxLayout(orientation="vertical", spacing=0)
         col.add_widget(txt("Medicine Assistant", 15.5, PAL["ink"], True))
-        col.add_widget(txt("OFFLINE  •  PRIVATE  •  FREE", 8,
+        col.add_widget(txt(t("topbar_sub", app.language), 8,
                            PAL["muted"], False))
         self.add_widget(col)
 
@@ -645,7 +814,7 @@ class TopBar(BoxLayout):
             return b
 
         self.bell = _tap_icon("bell", (42, 42), (26, 26), PAL["ink"])
-        self.bell.bind(on_release=lambda *_: setattr(app.sm, "current", "reminders"))
+        self.bell.bind(on_release=lambda *_: app.go("reminders"))
         self.add_widget(self.bell)
         self.avatar_btn = _tap_icon(None, (42, 42), (34, 34), PAL["primary"],
                                     custom=Avatar(app.avatar_letter(), size=dp(34)))
@@ -657,17 +826,17 @@ class TopBar(BoxLayout):
 
 
 class BackBar(BoxLayout):
-    """Sub-screen bar: back button + title."""
+    """Sub-screen bar: back button + title (goes back via app.go)."""
 
     def __init__(self, app, title, back="home", **kw):
         super().__init__(orientation="horizontal", size_hint_y=None,
                          height=dp(60), padding=(dp(14), dp(10)),
                          spacing=dp(10), **kw)
-        b = RoundedButton("‹ " + ("वापस" if app.language == HI else "Back"),
+        b = RoundedButton("‹ " + t("back_btn", app.language),
                           bg=PAL["teal_soft"], fg=PAL["primary"], fs=11.5,
-                          size_hint=(None, None), size=(dp(84), dp(40)),
+                          size_hint=(None, None), size=(dp(92), dp(40)),
                           radius=20)
-        b.bind(on_release=lambda *_: setattr(app.sm, "current", back))
+        b.bind(on_release=lambda *_: app.go(back))
         self.add_widget(b)
         self.add_widget(txt(title, 16, PAL["ink"], True))
 
@@ -720,8 +889,7 @@ class BottomNav(BoxLayout):
         if target == "profile":
             col.bind(on_release=lambda *_: self.app.open_profile())
         else:
-            col.bind(on_release=lambda *_: setattr(self.app.sm, "current",
-                                                   target))
+            col.bind(on_release=lambda *_: self.app.go(target))
         return col
 
 
@@ -739,6 +907,59 @@ def text_card(title, body_text, title_color=None, body_color=None):
     c.add_widget(t1)
     c.add_widget(t2)
     return c
+
+
+def _section_card(title, title_color=None):
+    """White info card with a coloured section heading (auto height)."""
+    c = Card(orientation="vertical", size_hint_y=None, spacing=dp(5),
+             padding=(dp(14), dp(10), dp(14), dp(12)))
+    c.bind(minimum_height=c.setter("height"))
+    c.add_widget(auto_txt(title, 12.5, title_color or PAL["primary"], True,
+                          min_h=dp(22), extra=dp(3)))
+    return c
+
+
+def _bullet(text_, fs=11.5, color=None, dot_color=None):
+    """One bullet line: small teal dot + wrapped text (auto height)."""
+    lab = auto_txt(text_, fs, color or PAL["ink"], extra=dp(3))
+    row = BoxLayout(size_hint_y=None, spacing=dp(2))
+    row.add_widget(txt("•", fs + 1, dot_color or PAL["primary"], True,
+                       size_hint_x=None, width=dp(12), valign="top"))
+    row.add_widget(lab)
+    lab.bind(height=lambda _l, h: setattr(row, "height", h))
+    return row
+
+
+class _ToastPill(RelativeLayout):
+    """One toast message: rounded dark pill, measured so text ALWAYS fits.
+
+    Added straight to the Window by MedicineAssistantApp.toast(), so it sits
+    above every screen and sheet, then fades away on its own.
+    """
+
+    def __init__(self, msg, bg=None, **kw):
+        super().__init__(size_hint=(None, None), **kw)
+        bg = bg if bg is not None else (0.031, 0.267, 0.290, 0.97)
+        maxw = Window.width * 0.86 - dp(36)
+        tw, th = measure_text(msg, 13)
+        wrap = tw > maxw
+        if wrap:
+            tw, th = measure_text(msg, 13, wrap_width=maxw)
+        else:
+            tw = tw
+        self.size = (min(tw, maxw) + dp(36), th + dp(22))
+        with self.canvas.before:
+            Color(rgba=bg)
+            self._rr = RoundedRectangle(pos=(0, 0), size=self.size,
+                                        radius=[dp(20)])
+        lab = txt(msg, 13, (1, 1, 1, 1), wrap=wrap, halign="center")
+        lab.size = self.size
+        self.add_widget(lab)
+
+    def place(self):
+        """Absolute bottom-centre window position (called after add)."""
+        self.center_x = Window.width / 2.0
+        self.y = dp(112)
 
 
 # =====================================================================
@@ -1098,8 +1319,18 @@ if _JNI_OK:
 # APP
 # =====================================================================
 class MedicineAssistantApp(App):
+    # tab/sub-screen ordering -> slide-transition direction feels physical
+    _ORDER = {"home": 0, "history": 1, "reminders": 2,
+              "search": 4, "scan": 4, "cabinet": 4, "family": 4,
+              "expiry": 4, "storage": 4, "auth": 4, "about": 4,
+              "details": 5}
+
     def build(self):
         self.title = "Medicine Assistant"
+        try:
+            Window.softinput_mode = "pan"     # keyboard never covers forms
+        except Exception:
+            pass
         os.makedirs(self.user_data_dir, exist_ok=True)
         db_module.DB_PATH = os.path.join(self.user_data_dir,
                                          "medicine_database.db")
@@ -1119,6 +1350,8 @@ class MedicineAssistantApp(App):
         self.voice = VoiceSearch()
         self._due_spoken_today = set()       # (reminder_id, time) already spoken
         self._last_seen_minute = ""
+        self._toast = None
+        self._toast_evt = None
 
         self.sm = ScreenManager(transition=FadeTransition(duration=0.16))
         self.home = HomeScreen(self, name="home")
@@ -1197,6 +1430,20 @@ class MedicineAssistantApp(App):
             self.speaker.stop()
 
     # ---------------- navigation helpers ----------------
+    def go(self, name):
+        """Professional slide transition between screens.
+
+        Forward (deeper) screens slide in from the RIGHT, going back
+        slides in from the LEFT - like every well-made mobile app.
+        """
+        cur = self.sm.current
+        if cur == name or name not in self.sm.screen_names:
+            return
+        forward = self._ORDER.get(name, 4) >= self._ORDER.get(cur, 4)
+        self.sm.transition = SlideTransition(
+            direction="left" if forward else "right", duration=0.22)
+        self.sm.current = name
+
     def show_details(self, medicine, match_type, source="search",
                      packaging=None):
         expiry_status = None
@@ -1205,7 +1452,53 @@ class MedicineAssistantApp(App):
         db.add_history_entry(self.conn, medicine, match_type,
                              expiry_status, source)
         self.details.show(medicine, match_type, packaging)
-        self.sm.current = "details"
+        self.go("details")
+
+    # ---------------- toasts (tiny confirmations) ----------------
+    def toast(self, msg, tone="ok"):
+        """Short bottom toast: 'Saved', 'Dose recorded' ... auto-fades."""
+        colors = {"ok": (0.031, 0.267, 0.290, 0.97),
+                  "warn": (0.83, 0.48, 0.03, 0.97),
+                  "err": (0.80, 0.16, 0.16, 0.97)}
+        if not msg:
+            return
+        # only one toast alive at a time: out with the old...
+        if self._toast_evt is not None:
+            self._toast_evt.cancel()
+            self._toast_evt = None
+        if self._toast is not None:
+            try:
+                Animation.stop_all(self._toast)
+                Window.remove_widget(self._toast)
+            except Exception:
+                pass
+            self._toast = None
+        pill = _ToastPill(msg, bg=colors.get(tone, colors["ok"]))
+        self._toast = pill
+        Window.add_widget(pill)
+        pill.place()
+        fin_y = pill.y
+        pill.y = fin_y - dp(26)
+        pill.opacity = 0
+        Animation(opacity=1, y=fin_y, d=0.22, t="out_cubic").start(pill)
+        self._toast_evt = Clock.schedule_once(
+            lambda _dt: self._toast_out(pill), 2.3)
+
+    def _toast_out(self, pill):
+        if self._toast is not pill:
+            return
+        self._toast_evt = None
+        anim = Animation(opacity=0, y=pill.y + dp(12), d=0.25, t="in_quad")
+
+        def _gone(*_):
+            if self._toast is pill:
+                self._toast = None
+            try:
+                Window.remove_widget(pill)
+            except Exception:
+                pass
+        anim.bind(on_complete=_gone)
+        anim.start(pill)
 
     def open_profile(self):
         self.profile_sheet.refresh_ui()
@@ -1218,21 +1511,21 @@ class MedicineAssistantApp(App):
     def run_suggestion(self, action):
         """Suggestion lines under the home search bar (one tap)."""
         if action == "tell_my_medicines":
-            self.sm.current = "cabinet"
+            self.go("cabinet")
             summary = db.cabinet_expiry_summary(self.conn)
             self.speak(build_cabinet_spoken_summary(summary, self.language))
         elif action == "check_expiry":
             self.expiry_scr.refresh()
-            self.sm.current = "expiry"
+            self.go("expiry")
             summary = db.cabinet_expiry_summary(self.conn)
             self.speak(build_cabinet_spoken_summary(summary, self.language))
         elif action == "storage_tips":
             self.storage_scr.refresh()
-            self.sm.current = "storage"
+            self.go("storage")
         elif action == "add_medicine":
             self.open_add()
         elif action == "family_routine":
-            self.sm.current = "reminders"
+            self.go("reminders")
 
     # ---------------- reminder engine (voice, in-app) ----------------
     def _tick_reminders(self, _dt):
@@ -1353,8 +1646,8 @@ class HomeScreen(ScreenBase):
         name = app.user_name()
         if name:
             greet = f"{greet}, {name}"
-        body.add_widget(txt(greet, 22, PAL["ink"], True, wrap=True,
-                            size_hint_y=None, height=dp(40)))
+        body.add_widget(auto_txt(greet, 22, PAL["ink"], True,
+                                 min_h=dp(38)))
 
         # ---- status pill: today's doses ----
         from datetime import datetime as _dt
@@ -1368,12 +1661,14 @@ class HomeScreen(ScreenBase):
             s_txt = t("status_progress", lang, taken=taken, total=scheduled)
             s_icon, s_col = "clock", PAL["warn"]
         pill = TintCard(bg=PAL["ok_soft"] if s_icon == "check" else PAL["mint_soft"],
-                        radius=20, size_hint_y=None, height=dp(44),
+                        radius=20, size_hint_y=None, height=dp(46),
                         padding=(dp(12), 0))
         prow = BoxLayout(orientation="horizontal", spacing=dp(8))
         prow.add_widget(Icon(s_icon, color=s_col, size_hint=(None, None),
-                             size=(dp(22), dp(22))))
-        prow.add_widget(txt(s_txt, 12, s_col, True))
+                             size=(dp(22), dp(22)),
+                             pos_hint={"center_y": .5}))
+        prow.add_widget(txt(s_txt, 12, s_col, True,
+                            pos_hint={"center_y": .5}))
         pill.add_widget(prow)
         body.add_widget(pill)
 
@@ -1396,22 +1691,22 @@ class HomeScreen(ScreenBase):
         srow.add_widget(mic)
         cam = IconButton("camera", color=PAL["primary"], size_wh=(40, 40),
                          icon_wh=(24, 24), pos_hint={"center_y": .5})
-        cam.bind(on_release=lambda *_: setattr(app.sm, "current", "scan"))
+        cam.bind(on_release=lambda *_: app.go("scan"))
         srow.add_widget(cam)
         bar.add_widget(srow)
         body.add_widget(bar)
 
-        self.status_lbl = txt("", 10, PAL["muted"], wrap=True,
-                              size_hint_y=None, height=dp(18))
+        self.status_lbl = auto_txt("", 10, PAL["muted"], min_h=dp(16),
+                                   extra=dp(4), halign="center")
         body.add_widget(self.status_lbl)
 
         # ---- suggestion lines (elder-friendly, one tap) ----
-        sug_row = BoxLayout(orientation="vertical", spacing=dp(6),
+        sug_row = BoxLayout(orientation="vertical", spacing=dp(7),
                             size_hint_y=None)
         for action, line in get_suggestions(lang)[:3]:
             b = RoundedButton(line, bg=PAL["teal_soft"], fg=PAL["primary"],
-                              fs=11.5, radius=18, size_hint_y=None,
-                              height=dp(38), bold=False)
+                              fs=12, radius=19, size_hint_y=None,
+                              height=dp(42), bold=False)
             b.bind(on_release=lambda _x, a=action: app.run_suggestion(a))
             sug_row.add_widget(b)
         sug_row.bind(minimum_height=sug_row.setter("height"))
@@ -1445,12 +1740,11 @@ class HomeScreen(ScreenBase):
         for target, kind, title, sub, ctag in acts:
             grid.add_widget(self._qa_card(target, kind, title, sub, ctag))
         grid.bind(minimum_height=grid.setter("height"))
-        grid.height = dp(3 * 118)              # explicit: 3 rows of cards
         body.add_widget(grid)
 
         # ---- add / scan big button ----
         addb = RoundedButton("+  " + t("add_scan", lang), fs=15,
-                             size_hint_y=None, height=dp(54), radius=27)
+                             size_hint_y=None, height=dp(56), radius=28)
         addb.bind(on_release=lambda *_: app.open_add())
         body.add_widget(addb)
 
@@ -1459,28 +1753,35 @@ class HomeScreen(ScreenBase):
                             halign="center", size_hint_y=None,
                             height=dp(24)))
 
+        # gentle staggered rise-in for the whole dashboard
+        stagger_children(body)
+
     # ---------------- pieces ----------------
     def _qa_card(self, target, kind, title, sub, ctag):
         card = CardButton(orientation="vertical", padding=(dp(12), dp(10)),
-                          spacing=dp(3), size_hint_y=None, height=dp(118))
+                          spacing=dp(3), size_hint_y=None, height=dp(124))
         row = BoxLayout(orientation="horizontal", size_hint_y=None,
                         height=dp(30))
         row.add_widget(Icon(kind, color=PAL["primary"], size_hint=(None, None),
                             size=(dp(28), dp(28))))
         if ctag:
             row.add_widget(chip(ctag, PAL["primary"], PAL["mint_soft"],
-                                height=dp(22)))
+                                height=dp(24)))
         card.add_widget(row)
         card.add_widget(txt(title, 13, PAL["ink"], True, size_hint_y=None,
-                            height=dp(20)))
+                            height=dp(21)))
         card.add_widget(txt(sub, 9.5, PAL["muted"], wrap=True))
-        card.bind(on_release=lambda *_: setattr(self.app.sm, "current", target))
+        card.bind(on_release=lambda *_: self.app.go(target))
         return card
 
     def refresh_dose_card(self):
         """Rebuild only the upcoming-dose card (called every 20 s)."""
         app, lang = self.app, self.app.language
         holder = self.dose_holder
+        # stop any pulse animation still attached to the old dot
+        if getattr(self, "_pulse", None) is not None:
+            self._pulse.stop(self._pulse_dot)
+            self._pulse = None
         holder.clear_widgets()
 
         from datetime import datetime
@@ -1490,58 +1791,69 @@ class HomeScreen(ScreenBase):
             reminder, hhmm = due[0]
             label_txt = t("due_now", lang)
             time_txt = hhmm
+            urgent = True
         else:
             nxt = app.next_slot_today()
             if not nxt:
                 card = TintCard(bg=PAL["teal_soft"], size_hint_y=None,
-                                height=dp(64), padding=(dp(14), dp(8)))
-                card.add_widget(txt(t("no_doses_today", lang), 11,
-                                    PAL["muted"], wrap=True))
+                                padding=(dp(14), dp(8)))
+                card.bind(minimum_height=card.setter("height"))
+                card.add_widget(auto_txt(t("no_doses_today", lang), 11,
+                                         PAL["muted"], valign="middle"))
                 holder.add_widget(card)
                 return
             _slot, reminder, hhmm = nxt
             label_txt = t("upcoming_dose", lang)
             time_txt = hhmm
+            urgent = False
 
         card = Card(size_hint_y=None, orientation="vertical",
                     padding=(dp(14), dp(10)), spacing=dp(6))
+        card.bind(minimum_height=card.setter("height"))
         top = BoxLayout(orientation="horizontal", size_hint_y=None,
-                        height=dp(24))
+                        height=dp(24), spacing=dp(8))
         dot = Widget(size_hint=(None, None), size=(dp(10), dp(10)),
                      pos_hint={"center_y": .5})
         with dot.canvas:
-            Color(rgba=PAL["primary"])
+            Color(rgba=PAL["danger"] if urgent else PAL["primary"])
             _d = Ellipse(pos=dot.pos, size=dot.size)
         dot.bind(pos=lambda w, _v: setattr(_d, "pos", (w.x, w.center_y - dp(5))))
         top.add_widget(dot)
-        top.add_widget(txt(label_txt, 11, PAL["primary"], True))
+        top.add_widget(txt(label_txt, 11,
+                           PAL["danger"] if urgent else PAL["primary"], True))
         top.add_widget(txt(time_txt, 15, PAL["primary"], True,
                            halign="right", size_hint=(None, None),
                            size=(dp(90), dp(24))))
         card.add_widget(top)
 
         card.add_widget(txt(reminder.medicine_name, 17, PAL["ink"], True,
-                            size_hint_y=None, height=dp(26)))
+                            size_hint_y=None, height=dp(28)))
         sub = f"{reminder.strength or ''}  •  {t('daily', lang)}  •  " \
               f"{reminder.member_name}"
         card.add_widget(txt(sub, 11, PAL["muted"], size_hint_y=None,
                             height=dp(18)))
-        card.add_widget(txt(t("alert_note", lang), 10, PAL["muted"],
-                            wrap=True, size_hint_y=None, height=dp(20)))
+        card.add_widget(auto_txt(t("alert_note", lang), 10, PAL["muted"]))
 
         brow = BoxLayout(orientation="horizontal", spacing=dp(8),
-                         size_hint_y=None, height=dp(46))
+                         size_hint_y=None, height=dp(48))
         take = RoundedButton(t("take_now", lang), fs=13)
         take.bind(on_release=lambda *_: self._take_dose(reminder, hhmm))
         brow.add_widget(take)
         snz = RoundedButton(t("snooze_15", lang), bg=PAL["track"],
                             fg=PAL["muted"], fs=12, size_hint_x=None,
-                            width=dp(130))
+                            width=dp(132))
         snz.bind(on_release=lambda *_: self._snooze_dose(reminder, hhmm))
         brow.add_widget(snz)
         card.add_widget(brow)
-        card.height = dp(24 + 26 + 18 + 20 + 46 + 20 + 6 * 4)
         holder.add_widget(card)
+
+        # a dose that became DUE gets an attention pulse on its status dot
+        if urgent:
+            self._pulse_dot = dot
+            self._pulse = (Animation(opacity=0.25, d=0.7, t="in_out_sine")
+                           + Animation(opacity=1, d=0.7, t="in_out_sine"))
+            self._pulse.repeat = True
+            self._pulse.start(dot)
 
     def _take_dose(self, reminder, hhmm):
         from datetime import datetime
@@ -1549,12 +1861,11 @@ class HomeScreen(ScreenBase):
         db.upsert_dose_log(self.app.conn, reminder.id,
                            now.strftime("%Y-%m-%d"), hhmm, "taken",
                            taken_at=now.strftime("%Y-%m-%d %H:%M"))
-        self.status_lbl.text = t("dose_recorded", self.app.language)
+        msg = t("dose_recorded", self.app.language)
+        self.status_lbl.text = msg
         self.status_lbl.color = PAL["ok"]
-        self.app.speak(build_reminder_spoken(
-            reminder.member_name, reminder.medicine_name,
-            reminder.strength, self.app.language).split(". ")[1]
-            if False else t("dose_recorded", self.app.language))
+        self.app.speak(msg)
+        self.app.toast(msg)
         self.refresh()
 
     def _snooze_dose(self, reminder, hhmm):
@@ -1566,8 +1877,10 @@ class HomeScreen(ScreenBase):
                            snooze_until=until.strftime("%Y-%m-%d %H:%M"))
         # allow re-speak after snooze ends
         self.app._due_spoken_today.discard((reminder.id, hhmm))
-        self.status_lbl.text = t("snoozed_msg", self.app.language)
+        msg = t("snoozed_msg", self.app.language)
+        self.status_lbl.text = msg
         self.status_lbl.color = PAL["warn"]
+        self.app.toast(msg, tone="warn")
         self.refresh()
 
     def refresh_avatar(self):
@@ -1579,7 +1892,7 @@ class HomeScreen(ScreenBase):
     def _go_search(self):
         q = self.input.text.strip()
         app = self.app
-        app.sm.current = "search"
+        app.go("search")
         app.search.set_query(q)
 
     def _voice(self):
@@ -1616,35 +1929,22 @@ class HomeScreen(ScreenBase):
 # =====================================================================
 # ADD / SCAN sheet (bottom popup)
 # =====================================================================
-class AddSheet(ModalView):
-    def __init__(self, app, **kw):
-        super().__init__(**kw)
-        self.app = app
-        self.size_hint = (1, None)
-        self.height = dp(360)
-        self.background = ""
-        self.anchor_y = "bottom"
-        self.auto_dismiss = True
+class AddSheet(BottomSheet):
+    SHEET_HEIGHT = dp(360)
 
     def refresh_ui(self):
         self.clear_widgets()
         app, lang = self.app, self.app.language
         card = Card(radius=22, orientation="vertical",
                     padding=(dp(16), dp(14)), spacing=dp(8))
-        head = BoxLayout(size_hint_y=None, height=dp(26))
-        head.add_widget(txt(t("add_scan", lang), 15, PAL["ink"], True))
-        x = RoundedButton("X", bg=PAL["track"], fg=PAL["muted"], fs=12,
-                          size_hint=(None, None), size=(dp(34), dp(30)),
-                          radius=15)
-        x.bind(on_release=lambda *_: self.dismiss())
-        head.add_widget(x)
-        card.add_widget(head)
+        card.add_widget(sheet_head(t("add_scan", lang), self, fs=15,
+                                   height=dp(26)))
 
         options = [
             ("camera", t("sheet_scan", lang),
-             lambda: (self.dismiss(), setattr(app.sm, "current", "scan"))),
+             lambda: (self.dismiss(), app.go("scan"))),
             ("search", t("sheet_search", lang),
-             lambda: (self.dismiss(), setattr(app.sm, "current", "search"))),
+             lambda: (self.dismiss(), app.go("search"))),
             ("box", t("sheet_cabinet", lang),
              lambda: (self.dismiss(), app.cabinet.open_form())),
             ("bell", t("sheet_reminder", lang),
@@ -1654,7 +1954,7 @@ class AddSheet(ModalView):
         ]
         for kind, label, fn in options:
             b = CardButton(orientation="horizontal", size_hint_y=None,
-                           height=dp(46), padding=(dp(12), 0), spacing=dp(10))
+                           height=dp(48), padding=(dp(12), 0), spacing=dp(10))
             b.add_widget(Icon(kind, color=PAL["primary"],
                               size_hint=(None, None), size=(dp(24), dp(24)),
                               pos_hint={"center_y": .5}))
@@ -1663,38 +1963,25 @@ class AddSheet(ModalView):
                              size=(dp(18), dp(40)), halign="center"))
             b.bind(on_release=lambda *_x, f=fn: f())
             card.add_widget(b)
+        self._sheet_card = card
         self.add_widget(card)
 
 
 # =====================================================================
 # PROFILE & SETTINGS sheet
 # =====================================================================
-class ProfileSheet(ModalView):
-    def __init__(self, app, **kw):
-        super().__init__(**kw)
-        self.app = app
-        self.size_hint = (1, None)
-        self.height = dp(560)
-        self.background = ""
-        self.anchor_y = "bottom"
-        self.auto_dismiss = True
+class ProfileSheet(BottomSheet):
+    SHEET_HEIGHT = dp(560)
 
     def refresh_ui(self):
         self.clear_widgets()
         app, lang = self.app, self.app.language
-        from medicine.information import LV_SIMPLE
 
         card = Card(radius=22, orientation="vertical",
                     padding=(dp(16), dp(12)), spacing=dp(8))
 
-        head = BoxLayout(size_hint_y=None, height=dp(28))
-        head.add_widget(txt("MEDICINE ASSISTANT", 10, PAL["primary"], True))
-        x = RoundedButton("X", bg=PAL["track"], fg=PAL["muted"], fs=12,
-                          size_hint=(None, None), size=(dp(34), dp(30)),
-                          radius=15)
-        x.bind(on_release=lambda *_: self.dismiss())
-        head.add_widget(x)
-        card.add_widget(head)
+        card.add_widget(sheet_head("MEDICINE ASSISTANT", self, fs=10,
+                                   height=dp(28), color=PAL["primary"]))
         card.add_widget(txt(t("prof_title", lang), 17, PAL["ink"], True,
                             size_hint_y=None, height=dp(28)))
 
@@ -1756,14 +2043,14 @@ class ProfileSheet(ModalView):
         # privacy footer
         foot = TintCard(bg=PAL["mint_soft"], radius=16, size_hint_y=None,
                         padding=(dp(12), dp(8)))
-        fl = txt(t("privacy_footer", lang), 9.5, PAL["primary"], wrap=True,
-                 size_hint_y=None)
+        fl = auto_txt(t("privacy_footer", lang), 9.5, PAL["primary"],
+                      extra=dp(2), valign="middle")
         def _foot_h(_l, s):
-            fl.height = s[1]
-            foot.height = s[1] + dp(18)
+            foot.height = s[1] + dp(16)
         fl.bind(texture_size=_foot_h)
         foot.add_widget(fl)
         card.add_widget(foot)
+        self._sheet_card = card
         self.add_widget(card)
 
     # ---------------- row builders ----------------
@@ -1840,6 +2127,7 @@ class ProfileSheet(ModalView):
         self.app.save_name(self.name_in.text)
         self._av.set_letter(self.app.avatar_letter())
         self.app.home.refresh()
+        self.app.toast(t("saved_done", self.app.language))
         self.refresh_ui()
 
     def _clear_all(self):
@@ -1851,6 +2139,7 @@ class ProfileSheet(ModalView):
         self.dismiss()
         app.history.refresh()
         app.home.refresh()
+        app.toast(t("clear_done", lang))
 
 
 # =====================================================================
@@ -1887,8 +2176,8 @@ class SearchScreen(ScreenBase):
             multiline=False, text=self._last_query)
         self.input.bind(on_text_validate=lambda *_: self._do_search())
         row.add_widget(self.input)
-        go = RoundedButton(t("opt_search", lang), fs=12,
-                           size_hint=(None, None), size=(dp(92), dp(54)))
+        go = RoundedButton(t("go_short", lang), fs=12.5,
+                           size_hint=(None, None), size=(dp(96), dp(54)))
         go.bind(on_release=lambda *_: self._do_search())
         row.add_widget(go)
         body.add_widget(row)
@@ -1896,8 +2185,8 @@ class SearchScreen(ScreenBase):
         # suggestion one-tap lines here too (elders)
         for action, line in get_suggestions(lang)[:2]:
             b = RoundedButton(line, bg=PAL["teal_soft"], fg=PAL["primary"],
-                              fs=11, radius=17, size_hint_y=None,
-                              height=dp(36), bold=False)
+                              fs=11.5, radius=18, size_hint_y=None,
+                              height=dp(40), bold=False)
             b.bind(on_release=lambda _x, a=action: app.run_suggestion(a))
             body.add_widget(b)
 
@@ -1920,19 +2209,22 @@ class SearchScreen(ScreenBase):
             self.results.add_widget(text_card(
                 t("opt_search", lang),
                 t("type_name", lang)))
+            stagger_children(self.results)
             return
         matches = search_medicines(self.app.conn, query)
         if not matches:
             self.results.add_widget(text_card(
                 t("opt_search", lang),
                 t("not_found", lang, q=query), title_color=PAL["warn"]))
+            stagger_children(self.results)
             return
         for m in matches:
             self.results.add_widget(self._result_card(m, lang))
+        stagger_children(self.results)
 
     def _result_card(self, m, lang):
         card = CardButton(orientation="horizontal", size_hint_y=None,
-                          height=dp(72), padding=(dp(14), dp(8)), spacing=dp(8))
+                          height=dp(76), padding=(dp(14), dp(8)), spacing=dp(8))
         col = BoxLayout(orientation="vertical", spacing=dp(1))
         col.add_widget(txt(m.medicine.medicine_name, 14.5, PAL["ink"], True,
                            size_hint_y=None, height=dp(22)))
@@ -1976,35 +2268,32 @@ class ScanScreen(ScreenBase):
         root.add_widget(BottomNav(app, active="home"))
 
         pick = CardButton(orientation="vertical", size_hint_y=None,
-                          height=dp(120), padding=(dp(14), dp(8)), spacing=dp(2))
+                          height=dp(126), padding=(dp(14), dp(10)), spacing=dp(2))
         pick.add_widget(Icon("camera", color=PAL["primary"],
                              size_hint=(None, None), size=(dp(40), dp(40)),
                              pos_hint={"center_x": .5}))
         pick.add_widget(txt(t("sheet_scan", lang), 14, PAL["primary"], True,
                             halign="center", size_hint_y=None, height=dp(22)))
-        pick.add_widget(txt(
-            "Gallery se - photo kabhi save nahi hoti, on-device scan"
-            if lang == HI else
-            "From gallery - never saved, scanned fully on-device",
-            9.5, PAL["muted"], halign="center"))
+        pick.add_widget(auto_txt(t("scan_gallery_sub", lang), 9.5,
+                                 PAL["muted"], halign="center",
+                                 valign="middle", extra=dp(2)))
         pick.bind(on_release=lambda *_: self._pick_image())
         body.add_widget(pick)
 
-        self.status = txt("", 10.5, PAL["muted"], wrap=True, size_hint_y=None,
-                          height=dp(26), halign="center")
+        self.status = auto_txt("", 10.5, PAL["muted"], min_h=dp(18),
+                               extra=dp(4), halign="center")
         body.add_widget(self.status)
 
-        body.add_widget(txt("OR TYPE PACK TEXT" if lang == EN
-                            else "या पैक का text लिखें", 10, PAL["muted"],
+        body.add_widget(txt(t("or_type_pack", lang), 10, PAL["muted"],
                             True, halign="center", size_hint_y=None,
                             height=dp(16)))
         self.manual = RoundedInput(
             hint_text="MFG 03/2025  EXP 02/2027  Paracetamol 500",
             font_size=dp(14), multiline=True, size_hint_y=None,
-            height=dp(80))
+            height=dp(92))
         body.add_widget(self.manual)
-        check = RoundedButton("CHECK EXPIRY" if lang == EN else "एक्सपायरी जाँचें",
-                              fs=15, size_hint_y=None, height=dp(50))
+        check = RoundedButton(t("check_expiry_btn", lang),
+                              fs=15, size_hint_y=None, height=dp(52))
         check.bind(on_release=lambda *_: self._handle_text(
             self.manual.text.strip()))
         body.add_widget(check)
@@ -2026,10 +2315,7 @@ class ScanScreen(ScreenBase):
     def _pick_image(self):
         lang = self.app.language
         if not _JNI_OK:
-            self._set_status("Photo scan sirf Android app me chalta hai."
-                             if lang == EN else
-                             "फोटो स्कैन सिर्फ Android app में चलता है.",
-                             PAL["danger"])
+            self._set_status(t("scan_app_only", lang), PAL["danger"])
             return
         try:
             Intent = autoclass("android.content.Intent")
@@ -2051,7 +2337,7 @@ class ScanScreen(ScreenBase):
         if request_code != _PICK_IMAGE_REQUEST:
             return
         if result_code != RESULT_OK or data is None:
-            self._set_status("Cancelled." if lang == EN else "Cancel हुआ.")
+            self._set_status(t("cancelled", lang))
             return
         self._set_status(t("processing", lang), PAL["primary"])
         Clock.schedule_once(lambda _dt: self._start_ocr(data.getData()), 0.1)
@@ -2092,14 +2378,11 @@ class ScanScreen(ScreenBase):
         lang = self.app.language
         self.results.clear_widgets()
         if not raw_text:
-            self._set_status("Text khaali hai." if lang == EN
-                             else "Text खाली है.")
+            self._set_status(t("scan_text_empty", lang))
             return
 
         self.packaging = extract_packaging_info(raw_text)
-        self._set_status("OK - text mil gaya - results neeche." if lang == EN
-                         else "OK - text मिल गया - results नीचे.",
-                         PAL["primary"])
+        self._set_status(t("scan_text_ok", lang), PAL["primary"])
 
         section = format_packaging_info_section(self.packaging, None, lang)
         # card title already shows the header -> drop the section's own
@@ -2121,28 +2404,28 @@ class ScanScreen(ScreenBase):
                 self.results.add_widget(self._med_row(m, lang, source))
         else:
             self.results.add_widget(text_card(
-                "NO KNOWN MEDICINE FOUND" if lang == EN
-                else "कोई जानी दवा नहीं मिली",
+                t("scan_no_known", lang),
                 t("not_identified", lang), title_color=PAL["warn"]))
 
         shown = raw_text if len(raw_text) <= 400 else raw_text[:400] + " ..."
         self.results.add_widget(text_card(
-            "TEXT THAT WAS READ" if lang == EN else "जो text पढ़ा गया",
+            t("scan_text_read", lang),
             shown, body_color=PAL["muted"]))
+        stagger_children(self.results)
 
     def _med_row(self, m, lang, source):
         card = CardButton(orientation="horizontal", size_hint_y=None,
-                          height=dp(70), padding=(dp(14), dp(8)), spacing=dp(8))
+                          height=dp(76), padding=(dp(14), dp(8)), spacing=dp(8))
         col = BoxLayout(orientation="vertical", spacing=dp(1))
         col.add_widget(txt(m.medicine.medicine_name, 14, PAL["ink"], True,
                            size_hint_y=None, height=dp(22)))
         col.add_widget(txt(m.medicine.generic_name or "-", 10.5, PAL["muted"]))
         card.add_widget(col)
-        card.add_widget(chip("EXACT" if m.match_type == EXACT else "POSSIBLE",
-                             PAL["primary"] if m.match_type == EXACT
-                             else PAL["warn"],
-                             PAL["mint_soft"] if m.match_type == EXACT
-                             else PAL["warn_soft"]))
+        exact = m.match_type == EXACT
+        card.add_widget(chip(t("exact_tag", lang) if exact
+                             else t("possible_tag", lang),
+                             PAL["primary"] if exact else PAL["warn"],
+                             PAL["mint_soft"] if exact else PAL["warn_soft"]))
         card.add_widget(txt("›", 20, PAL["muted"], size_hint=(None, None),
                             size=(dp(16), dp(46)), halign="center"))
         card.bind(on_release=lambda *_: self.app.show_details(
@@ -2180,19 +2463,16 @@ class DetailsScreen(ScreenBase):
         if packaging is not None and packaging.expiry_status() == "expired":
             ban = TintCard(bg=PAL["danger_soft"], border=PAL["danger"],
                            radius=16, orientation="vertical",
-                           size_hint_y=None, height=dp(64),
-                           padding=(dp(14), dp(8)))
-            ban.add_widget(txt("EXPIRED - YE DAWA USE MAT KARO" if lang == HI
-                               else "EXPIRED - DO NOT USE THIS MEDICINE",
-                               15, PAL["danger"], True))
-            ban.add_widget(txt("Nai dawa ke liye pharmacist/doctor se mile."
-                               if lang == HI else
-                               "Please get a fresh supply - ask a pharmacist/doctor.",
-                               11, PAL["danger"]))
+                           size_hint_y=None, padding=(dp(14), dp(8)))
+            ban.bind(minimum_height=ban.setter("height"))
+            ban.add_widget(txt(t("expired_go", lang), 15, PAL["danger"],
+                               True, size_hint_y=None, height=dp(24)))
+            ban.add_widget(auto_txt(t("expired_get_fresh", lang), 11,
+                                    PAL["danger"]))
             body.add_widget(ban)
 
-        # confidence + explanation-level chips
-        row = BoxLayout(size_hint_y=None, height=dp(30), spacing=dp(8))
+        # confidence + explanation-level chips (fits even on small phones)
+        row = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(8))
         if match_type == EXACT:
             row.add_widget(chip(t("exact_tag", lang), PAL["primary"],
                                 PAL["mint_soft"]))
@@ -2206,53 +2486,51 @@ class DetailsScreen(ScreenBase):
                 t(key, lang), bg=PAL["primary"] if app.explain_lv == lv
                 else PAL["track"],
                 fg=PAL["white"] if app.explain_lv == lv else PAL["muted"],
-                fs=9.5, size_hint=(None, None), size=(dp(64), dp(30)),
-                radius=15,
+                fs=9.5, size_hint=(None, None), size=(dp(60), dp(32)),
+                radius=16,
                 on_release=lambda *_x, l=lv: app.save_explain_level(l))
             row.add_widget(b)
         body.add_widget(row)
 
-        # action row: LISTEN + STOP + SHARE + ADD-TO-CABINET
-        btnrow = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
-        listen = RoundedButton("LISTEN" if lang == EN else "सुनें", fs=13)
+        # possible-match honesty note right under the chip
+        if match_type != EXACT:
+            body.add_widget(auto_txt(t("possible_note", lang), 10,
+                                     PAL["warn"], extra=dp(2)))
+
+        # action rows: two calm rows instead of one cramped one
+        brow1 = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
+        listen = RoundedButton(t("btn_listen", lang), fs=13)
         listen.bind(on_release=lambda *_: self._listen())
-        btnrow.add_widget(listen)
-        stopb = RoundedButton("STOP" if lang == EN else "रोकें",
+        brow1.add_widget(listen)
+        stopb = RoundedButton(t("btn_stop", lang),
                               bg=PAL["track"], fg=PAL["muted"], fs=11,
-                              size_hint_x=None, width=dp(74))
+                              size_hint_x=None, width=dp(96))
         stopb.bind(on_release=lambda *_: self._stop())
-        btnrow.add_widget(stopb)
-        share = RoundedButton("SHARE" if lang == EN else "शेयर",
-                              bg=PAL["teal_soft"], fg=PAL["primary"], fs=11,
-                              size_hint_x=None, width=dp(86))
+        brow1.add_widget(stopb)
+        body.add_widget(brow1)
+
+        brow2 = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
+        share = RoundedButton(t("btn_share", lang),
+                              bg=PAL["teal_soft"], fg=PAL["primary"], fs=11.5)
         share.bind(on_release=lambda *_: self._share())
-        btnrow.add_widget(share)
-        cabadd = RoundedButton("+ " + t("qa_cabinet", lang),
-                               bg=PAL["mint_soft"], fg=PAL["primary"], fs=10,
-                               size_hint_x=None, width=dp(116))
+        brow2.add_widget(share)
+        cabadd = RoundedButton(t("add_to_cab", lang),
+                               bg=PAL["mint_soft"], fg=PAL["primary"], fs=11.5)
         cabadd.bind(on_release=lambda *_: self._add_cab())
-        btnrow.add_widget(cabadd)
-        body.add_widget(btnrow)
+        brow2.add_widget(cabadd)
+        body.add_widget(brow2)
 
-        self.status = txt("", 10, PAL["warn"], wrap=True, size_hint_y=None,
-                          height=dp(30), halign="center")
+        self.status = auto_txt("", 10, PAL["warn"], min_h=dp(16),
+                               extra=dp(2), halign="center")
         body.add_widget(self.status)
-
-        # ---- details text (level-aware) ----
-        page = format_details_page(medicine, match_type, lang,
-                                   level=app.explain_lv)
-        content = txt(page, 12, PAL["ink"], wrap=True, size_hint_y=None,
-                      valign="top")
-        content.bind(texture_size=lambda _l, s: setattr(
-            content, "height", s[1] + dp(8)))
-        card = Card(padding=(dp(14), dp(12)), size_hint_y=None)
-        card.add_widget(content)
-        card.bind(minimum_height=card.setter("height"))
 
         inner = BoxLayout(orientation="vertical", spacing=dp(10),
                           size_hint_y=None)
         inner.bind(minimum_height=inner.setter("height"))
-        inner.add_widget(card)
+
+        # ---- structured info cards (professional sheet, not raw text) ----
+        self._build_info_cards(inner, medicine, match_type, lang,
+                               app.explain_lv)
 
         # who-can-take + storage + authenticity cards (all levels, safety)
         inner.add_widget(text_card(t("who_card", lang),
@@ -2262,7 +2540,7 @@ class DetailsScreen(ScreenBase):
                                    format_storage_card(medicine, lang),
                                    title_color=PAL["primary"]))
         auth = CardButton(orientation="horizontal", size_hint_y=None,
-                          height=dp(48), padding=(dp(12), 0), spacing=dp(8))
+                          height=dp(56), padding=(dp(12), 0), spacing=dp(8))
         auth.add_widget(Icon("shield", color=PAL["primary"],
                              size_hint=(None, None), size=(dp(24), dp(24)),
                              pos_hint={"center_y": .5}))
@@ -2270,13 +2548,180 @@ class DetailsScreen(ScreenBase):
                             wrap=True))
         auth.add_widget(txt("›", 18, PAL["muted"], size_hint=(None, None),
                             size=(dp(16), dp(40)), halign="center"))
-        auth.bind(on_release=lambda *_: setattr(app.sm, "current", "auth"))
+        auth.bind(on_release=lambda *_: app.go("auth"))
         inner.add_widget(auth)
 
         scroll = ScrollView()
         scroll.add_widget(inner)
         body.add_widget(scroll)
         self.add_widget(root)
+        stagger_children(inner)
+
+    # ------------------------------------------------------------------
+    def _build_info_cards(self, inner, med, match_type, lang, level):
+        """Render the medicine info as a stack of clean section cards.
+
+        The plain-text report (format_details_page) is still used for SHARE;
+        on screen we show a professional structured sheet instead.
+        SIMPLE  -> elder mode: fewer sections, bigger text (safety kept full)
+        NORMAL  -> the full sheet
+        DETAILED-> normal sheet + source attribution line in the header
+        """
+        simple = (level == LV_SIMPLE)
+        detailed = (level == LV_DETAILED)
+        na = t("not_available", lang) if lang == HI else NOT_AVAILABLE
+        fs = 13 if simple else 11.5
+
+        def conf_line():
+            if match_type is None:
+                return t("conf_manual", lang)
+            if match_type == EXACT:
+                return t("conf_exact", lang)
+            return t("conf_possible", lang)
+
+        def first_sent(s):
+            s = (s or "").strip()
+            for sep in (". ", "\u0964 ", "\n"):  # full stop / danda / newline
+                if sep in s:
+                    return (s.split(sep, 1)[0] + sep.strip())
+            return s
+
+        # ---------------- header: name + confidence + meta ----------------
+        header = Card(orientation="vertical", size_hint_y=None, spacing=dp(3),
+                      padding=(dp(14), dp(12)))
+        header.bind(minimum_height=header.setter("height"))
+        header.add_widget(auto_txt(med.medicine_name, 15.5, PAL["ink"], True,
+                                   extra=dp(3)))
+        confc = PAL["primary"] if match_type == EXACT else PAL["warn"]
+        header.add_widget(auto_txt(conf_line(), 10.5, confc, True, extra=dp(2)))
+        meta = [("generic_lbl", med.generic_name),
+                ("strength_lbl", med.strength)]
+        if not simple:
+            meta += [("form_lbl", med.dosage_form),
+                     ("manufacturer_lbl", med.manufacturer)]
+        for key, val in meta:
+            row = BoxLayout(size_hint_y=None, spacing=dp(8))
+            k = auto_txt(t(key, lang), 10, PAL["muted"], size_hint_x=None,
+                         width=dp(106), extra=dp(3))
+            v = auto_txt(val or na, 11, PAL["ink"], extra=dp(3))
+            def _rh(*_a, r=row, kk=k, vv=v):
+                r.height = max(kk.height, vv.height)
+            k.bind(height=_rh)
+            v.bind(height=_rh)
+            row.add_widget(k)
+            row.add_widget(v)
+            header.add_widget(row)
+        if med.is_demo_data():
+            header.add_widget(auto_txt(t("demo_source", lang), 9.5,
+                                       PAL["muted"], extra=dp(2)))
+        elif detailed and med.source:
+            src = f"[{med.source} | {med.last_updated or '—'}]"
+            header.add_widget(auto_txt(src, 9.5, PAL["muted"], extra=dp(2)))
+        inner.add_widget(header)
+
+        # ---------------- what is this medicine ----------------
+        c = _section_card(t("what_is", lang))
+        if med.general_usage:
+            body = first_sent(med.general_usage) if simple else med.general_usage
+            c.add_widget(auto_txt(body, fs, extra=dp(3)))
+        elif med.category:
+            c.add_widget(auto_txt(f"{t('official_category', lang)}: "
+                                  f"{med.category}", fs, extra=dp(3)))
+        else:
+            c.add_widget(auto_txt(na, fs, PAL["muted"], extra=dp(3)))
+        if med.category and med.general_usage:
+            c.add_widget(auto_txt(f"{t('official_category', lang)}: "
+                                  f"{med.category}", 10.5, PAL["muted"],
+                                  extra=dp(2)))
+        if med.category:
+            simple_line = explain_in_simple_words(med.category, lang)
+            if simple_line:
+                c.add_widget(auto_txt(simple_line, 10.5, PAL["muted"],
+                                      extra=dp(2)))
+        inner.add_widget(c)
+
+        # ---------------- what is it used for ----------------
+        c = _section_card(t("uses_hdr", lang))
+        uses = med.uses_list()
+        if uses:
+            for item in (uses[:4] if simple else uses):
+                c.add_widget(_bullet(item, fs=fs))
+        else:
+            c.add_widget(auto_txt(na, fs, PAL["muted"], extra=dp(3)))
+        inner.add_widget(c)
+
+        # ---------------- how is it generally taken ----------------
+        c = _section_card(t("how_taken", lang))
+        if med.administration:
+            adm = first_sent(med.administration) if simple else med.administration
+            c.add_widget(auto_txt(adm, fs, extra=dp(3)))
+        else:
+            c.add_widget(auto_txt(na, fs, PAL["muted"], extra=dp(3)))
+        if not simple:
+            for ln in t("general_note", lang).split("\n"):
+                ln = ln.strip()
+                if ln:
+                    c.add_widget(_bullet(ln, fs=10.5, color=PAL["muted"],
+                                         dot_color=PAL["mint"]))
+            if med.storage_information:
+                c.add_widget(auto_txt(f"{t('storage_lbl', lang)}: "
+                                      f"{med.storage_information}", 10.5,
+                                      PAL["muted"], extra=dp(2)))
+        inner.add_widget(c)
+
+        # ---------------- safety & warnings (always full) ----------------
+        c = _section_card(t("safety_hdr", lang), title_color=PAL["warn"])
+        any_warning = False
+        for field_name, label_key in WARNING_FIELDS:
+            val = getattr(med, field_name, None)
+            if val:
+                c.add_widget(_bullet(f"{t(label_key, lang)}: {val}", fs=fs,
+                                     dot_color=PAL["warn"]))
+                any_warning = True
+        if not any_warning:
+            c.add_widget(auto_txt(na, fs, PAL["muted"], extra=dp(3)))
+        if simple:
+            c.add_widget(auto_txt(t("serious_signs", lang), 10.5,
+                                  PAL["danger"], True, extra=dp(1)))
+            c.add_widget(auto_txt(med.serious_warnings or na, fs,
+                                  extra=dp(3)))
+            if med.storage_information:
+                c.add_widget(auto_txt(f"{t('storage_card', lang)}: "
+                                      f"{med.storage_information}", 10.5,
+                                      PAL["muted"], extra=dp(2)))
+        inner.add_widget(c)
+
+        # ---------------- side effects (normal + detailed) ----------------
+        if not simple:
+            c = _section_card(t("side_fx_hdr", lang))
+            effects = med.side_effects_list()
+            if effects:
+                c.add_widget(auto_txt(t("common_fx", lang), 10.5,
+                                      PAL["muted"], True, extra=dp(1)))
+                for eff in effects:
+                    c.add_widget(_bullet(eff, fs=fs, dot_color=PAL["muted"]))
+            else:
+                c.add_widget(auto_txt(na, fs, PAL["muted"], extra=dp(3)))
+            c.add_widget(auto_txt(t("serious_signs", lang), 10.5,
+                                  PAL["danger"], True, extra=dp(1)))
+            c.add_widget(auto_txt(med.serious_warnings or na, fs,
+                                  extra=dp(3)))
+            inner.add_widget(c)
+
+        # ---------------- disclaimer (soft amber card) ----------------
+        disc = TintCard(bg=PAL["warn_soft"], radius=16,
+                        orientation="vertical", size_hint_y=None,
+                        padding=(dp(14), dp(10)), spacing=dp(4))
+        disc.bind(minimum_height=disc.setter("height"))
+        disc.add_widget(auto_txt(t("disclaimer_lbl", lang), 11.5, PAL["warn"],
+                                 True, extra=dp(2)))
+        disclaimer = DISCLAIMER_HI if lang == HI else DISCLAIMER
+        disc.add_widget(auto_txt(disclaimer, 10.5, PAL["ink"], extra=dp(3)))
+        if not simple:
+            urgent = URGENT_NOTE_HI if lang == HI else URGENT_NOTE
+            disc.add_widget(auto_txt(urgent, 10.5, PAL["ink"], True,
+                                     extra=dp(3)))
+        inner.add_widget(disc)
 
     def _add_cab(self):
         if not self.medicine:
@@ -2307,13 +2752,9 @@ class DetailsScreen(ScreenBase):
         lang = self.app.language
         page = format_details_page(self.medicine, self.match_type, lang,
                                    level="detailed")
-        header = ("Shared from Medicine Assistant (offline app)\n"
-                  "NOTE: General info only - not medical advice.\n\n"
-                  if lang == EN else
-                  "Medicine Assistant (offline app) se share kiya\n"
-                  "NOTE: Sirf general jaankari - medical salah nahi.\n\n")
-        if not share_text(header + page):
-            self.status.text = "Share sirf Android app me chalta hai."
+        if not share_text(t("share_note", lang) + page):
+            self.status.text = t("share_app_only", lang)
+            self.status.color = PAL["warn"]
 
 
 # =====================================================================
@@ -2337,17 +2778,16 @@ class HistoryScreen(ScreenBase):
         root.add_widget(body)
         root.add_widget(BottomNav(app, active="history"))
 
-        top = BoxLayout(size_hint_y=None, height=dp(30))
-        top.add_widget(txt("Sirf text - photos kabhi save nahi hoti."
-                           if lang == HI else
-                           "Text only - photos are never stored.",
-                           9.5, PAL["muted"]))
+        top = BoxLayout(size_hint_y=None, height=dp(32))
+        top.add_widget(txt(t("hist_note", lang), 9.5, PAL["muted"]))
         clear = RoundedButton(t("clear_hist", lang), bg=PAL["danger_soft"],
                               fg=PAL["danger"], fs=9.5,
-                              size_hint=(None, None), size=(dp(120), dp(30)),
-                              radius=15, bold=True)
+                              size_hint=(None, None), size=(dp(124), dp(32)),
+                              radius=16, bold=True)
         clear.bind(on_release=lambda *_: (db.clear_history(self.app.conn),
-                                          self.refresh()))
+                                          self.refresh(),
+                                          self.app.toast(
+                                              t("deleted_done", lang))))
         top.add_widget(clear)
         body.add_widget(top)
 
@@ -2363,16 +2803,18 @@ class HistoryScreen(ScreenBase):
         if not entries:
             self.list_box.add_widget(text_card(t("opt_history", lang),
                                                t("history_empty", lang)))
+            stagger_children(self.list_box)
             return
         for e in entries:
             self.list_box.add_widget(self._row(e))
+        stagger_children(self.list_box)
 
     def _row(self, e):
         status = (e.expiry_status or "").lower()
         dot = {"valid": PAL["ok"], "expiring_soon": PAL["warn"],
                "expired": PAL["danger"]}.get(status, PAL["track"])
         card = CardButton(orientation="horizontal", size_hint_y=None,
-                          height=dp(64), padding=(dp(12), dp(6)), spacing=dp(10))
+                          height=dp(66), padding=(dp(12), dp(6)), spacing=dp(10))
         dotw = Widget(size_hint=(None, None), size=(dp(12), dp(12)),
                       pos_hint={"center_y": .5})
         with dotw.canvas:
@@ -2440,9 +2882,11 @@ class RemindersScreen(ScreenBase):
         if not reminders:
             box.add_widget(text_card(t("rem_title", lang),
                                      t("rem_empty", lang)))
+            stagger_children(box)
             return
         for r in reminders:
             box.add_widget(self._row(r))
+        stagger_children(box)
 
     def _row(self, r):
         lang = self.app.language
@@ -2469,29 +2913,30 @@ class RemindersScreen(ScreenBase):
                             size_hint_y=None, height=dp(18)))
         delb = RoundedButton(t("cab_delete2", lang), bg=PAL["danger_soft"],
                              fg=PAL["danger"], fs=9.5, size_hint=(None, None),
-                             size=(dp(90), dp(28)), radius=14)
+                             size=(dp(92), dp(30)), radius=15)
         delb.bind(on_release=lambda *_:
-                  (db.delete_reminder(self.app.conn, r.id), self.refresh()))
+                  (db.delete_reminder(self.app.conn, r.id),
+                   self.refresh(),
+                   self.app.toast(t("deleted_done", self.app.language))))
         card.add_widget(delb)
         card.height = dp(30 + 20 + 18 + 34 + 16 + 4 * 4)
         return card
 
     def _toggle(self, r):
         db.set_reminder_active(self.app.conn, r.id, r.active != 1)
+        on = r.active != 1
         self.refresh()
+        self.app.toast(t("rem_on_msg" if on else "rem_off_msg",
+                         self.app.language))
 
 
-class ReminderFormSheet(ModalView):
+class ReminderFormSheet(BottomSheet):
     """Add-a-reminder bottom sheet."""
 
+    SHEET_HEIGHT = dp(470)
+
     def __init__(self, app, **kw):
-        super().__init__(**kw)
-        self.app = app
-        self.size_hint = (1, None)
-        self.height = dp(470)
-        self.background = ""
-        self.anchor_y = "bottom"
-        self.auto_dismiss = True
+        super().__init__(app, **kw)
         self.member_choice = None
 
     def refresh_ui(self):
@@ -2500,14 +2945,8 @@ class ReminderFormSheet(ModalView):
         card = Card(radius=22, orientation="vertical",
                     padding=(dp(16), dp(12)), spacing=dp(8))
 
-        head = BoxLayout(size_hint_y=None, height=dp(26))
-        head.add_widget(txt(t("rem_add", lang), 16, PAL["ink"], True))
-        x = RoundedButton("X", bg=PAL["track"], fg=PAL["muted"], fs=12,
-                          size_hint=(None, None), size=(dp(34), dp(30)),
-                          radius=15)
-        x.bind(on_release=lambda *_: self.dismiss())
-        head.add_widget(x)
-        card.add_widget(head)
+        card.add_widget(sheet_head(t("rem_add", lang), self, fs=16,
+                                   height=dp(26)))
 
         # who takes it?
         card.add_widget(txt(t("rem_member", lang), 11, PAL["muted"], True,
@@ -2526,14 +2965,14 @@ class ReminderFormSheet(ModalView):
         left.add_widget(txt(t("rem_med", lang), 10, PAL["muted"], True,
                             size_hint_y=None, height=dp(16)))
         self.med_in = RoundedInput(font_size=dp(14), multiline=False,
-                                   size_hint_y=None, height=dp(44))
+                                   size_hint_y=None, height=dp(46))
         left.add_widget(self.med_in)
         right = BoxLayout(orientation="vertical", spacing=dp(4),
                           size_hint_x=None, width=dp(120))
         right.add_widget(txt(t("rem_str", lang), 10, PAL["muted"], True,
                              size_hint_y=None, height=dp(16)))
         self.str_in = RoundedInput(font_size=dp(14), multiline=False,
-                                   size_hint_y=None, height=dp(44))
+                                   size_hint_y=None, height=dp(46))
         right.add_widget(self.str_in)
         half.add_widget(left)
         half.add_widget(right)
@@ -2543,7 +2982,7 @@ class ReminderFormSheet(ModalView):
                             size_hint_y=None, height=dp(16)))
         self.times_in = RoundedInput(hint_text="08:00, 20:30",
                                      font_size=dp(14), multiline=False,
-                                     size_hint_y=None, height=dp(44))
+                                     size_hint_y=None, height=dp(46))
         card.add_widget(self.times_in)
         card.add_widget(self.msg)
 
@@ -2551,6 +2990,7 @@ class ReminderFormSheet(ModalView):
                              height=dp(48), radius=24)
         save.bind(on_release=lambda *_: self._save())
         card.add_widget(save)
+        self._sheet_card = card
         self.add_widget(card)
 
     def _build_member_buttons(self):
@@ -2567,10 +3007,11 @@ class ReminderFormSheet(ModalView):
                    and self.member_choice == m.id)
             b = RoundedButton(label, bg=PAL["primary"] if sel else PAL["track"],
                               fg=PAL["white"] if sel else PAL["muted"],
-                              fs=10, size_hint=(None, None), radius=18,
+                              fs=10, size_hint=(None, None), radius=17,
                               height=dp(34))
-            b.bind(texture_size=lambda _b, s: setattr(_b, "width",
-                                                      s[0] + dp(24)))
+            # exact width from the font itself (never guess, never clip)
+            tw, _th = measure_text(label, 10 * 1.15)
+            b.width = tw + dp(26)
             b.bind(on_release=lambda *_x, mm=m: self._pick_member(mm))
             self._member_box.add_widget(b)
 
@@ -2599,6 +3040,7 @@ class ReminderFormSheet(ModalView):
         app.home.refresh()
         self.dismiss()
         app.reminder_scr.refresh()
+        app.toast(t("rem_saved", lang))
 
 
 # =====================================================================
@@ -2644,18 +3086,17 @@ class CabinetScreen(ScreenBase):
         ti.add_widget(head)
         chips_row = BoxLayout(orientation="horizontal", spacing=dp(6),
                               size_hint_y=None, height=dp(28))
-        chips_row.add_widget(chip(f"{t('exp_active', lang)}: {len(summary['valid'])}",
+        chips_row.add_widget(chip(f"{t('exp_active_short', lang)}: {len(summary['valid'])}",
                                   PAL["ok"], PAL["ok_soft"], height=dp(26)))
-        chips_row.add_widget(chip(f"{t('exp_soon2', lang)}: {len(summary['soon'])}",
+        chips_row.add_widget(chip(f"{t('exp_soon_short', lang)}: {len(summary['soon'])}",
                                   PAL["warn"], PAL["warn_soft"], height=dp(26)))
-        chips_row.add_widget(chip(f"{t('exp_expired2', lang)}: {len(summary['expired'])}",
+        chips_row.add_widget(chip(f"{t('exp_expired_short', lang)}: {len(summary['expired'])}",
                                   PAL["danger"], PAL["danger_soft"], height=dp(26)))
         ti.add_widget(chips_row)
         more = RoundedButton(t("exp_dash", lang) + " ›", bg=PAL["track"],
                              fg=PAL["ink"], fs=10, size_hint_y=None,
-                             height=dp(26), radius=13, bold=False,
-                             on_release=lambda *_: setattr(
-                                 app.sm, "current", "expiry"))
+                             height=dp(28), radius=14, bold=False,
+                             on_release=lambda *_: app.go("expiry"))
         ti.add_widget(more)
         strip.add_widget(ti)
         body.add_widget(strip)
@@ -2677,14 +3118,17 @@ class CabinetScreen(ScreenBase):
         if not items:
             box.add_widget(text_card(t("cabinet_title", lang),
                                      t("cab_empty", lang)))
+            stagger_children(box)
             return
         for it in items:
             box.add_widget(self._row(it))
+        stagger_children(box)
 
     def _row(self, it):
         lang = self.app.language
         card = Card(orientation="vertical", size_hint_y=None,
                     padding=(dp(12), dp(8)), spacing=dp(4))
+        card.bind(minimum_height=card.setter("height"))
         top = BoxLayout(orientation="horizontal", size_hint_y=None,
                         height=dp(26), spacing=dp(8))
         top.add_widget(txt(it.medicine_name
@@ -2692,13 +3136,13 @@ class CabinetScreen(ScreenBase):
                            14, PAL["ink"], True))
         state = it.expiry_state()
         if state == "valid":
-            top.add_widget(chip(t("exp_active", lang), PAL["ok"],
+            top.add_widget(chip(t("exp_active_short", lang), PAL["ok"],
                                 PAL["ok_soft"], height=dp(24)))
         elif state == "expiring_soon":
-            top.add_widget(chip(t("exp_soon2", lang), PAL["warn"],
+            top.add_widget(chip(t("exp_soon_short", lang), PAL["warn"],
                                 PAL["warn_soft"], height=dp(24)))
         elif state == "expired":
-            top.add_widget(chip(t("exp_expired2", lang), PAL["danger"],
+            top.add_widget(chip(t("exp_expired_short", lang), PAL["danger"],
                                 PAL["danger_soft"], height=dp(24)))
         else:
             top.add_widget(chip(t("exp_nodate", lang), PAL["muted"],
@@ -2712,12 +3156,11 @@ class CabinetScreen(ScreenBase):
             info_bits.append(it.dosage)
         if it.storage_place:
             info_bits.append(it.storage_place)
-        card.add_widget(txt("  •  ".join(info_bits) if info_bits else "-",
-                            10, PAL["muted"], wrap=True, size_hint_y=None,
-                            height=dp(30)))
+        card.add_widget(auto_txt("  •  ".join(info_bits) if info_bits
+                                 else "-", 10, PAL["muted"], min_h=dp(22)))
 
         brow = BoxLayout(orientation="horizontal", spacing=dp(8),
-                         size_hint_y=None, height=dp(34))
+                         size_hint_y=None, height=dp(36))
         qty = it.quantity if it.quantity is not None else 0
         if qty == int(qty):
             qty = int(qty)
@@ -2726,39 +3169,33 @@ class CabinetScreen(ScreenBase):
                             True))
         take = RoundedButton(t("cab_took1", lang), bg=PAL["mint_soft"],
                              fg=PAL["primary"], fs=9.5,
-                             size_hint=(None, None), size=(dp(110), dp(32)),
-                             radius=16)
+                             size_hint=(None, None), size=(dp(112), dp(34)),
+                             radius=17)
         take.bind(on_release=lambda *_: self._took_one(it))
         brow.add_widget(take)
         delb = RoundedButton(t("cab_delete2", lang), bg=PAL["danger_soft"],
                              fg=PAL["danger"], fs=9.5,
-                             size_hint=(None, None), size=(dp(80), dp(32)),
-                             radius=16)
+                             size_hint=(None, None), size=(dp(82), dp(34)),
+                             radius=17)
         delb.bind(on_release=lambda *_:
                   (db.delete_cabinet_item(self.app.conn, it.id),
-                   self.refresh()))
+                   self.refresh(),
+                   self.app.toast(t("deleted_done", self.app.language))))
         brow.add_widget(delb)
         card.add_widget(brow)
-        card.height = dp(26 + 30 + 34 + 16 + 4 * 4)
         return card
 
     def _took_one(self, it):
         if it.quantity is not None and it.quantity > 0:
             db.update_cabinet_quantity(self.app.conn, it.id,
                                        max(0, it.quantity - 1))
+            self.app.toast(t("qty_updated", self.app.language))
         self.refresh()
         self.app.home.refresh()
 
 
-class CabinetFormSheet(ModalView):
-    def __init__(self, app, **kw):
-        super().__init__(**kw)
-        self.app = app
-        self.size_hint = (1, None)
-        self.height = dp(560)
-        self.background = ""
-        self.anchor_y = "bottom"
-        self.auto_dismiss = True
+class CabinetFormSheet(BottomSheet):
+    SHEET_HEIGHT = dp(560)
 
     def refresh_ui(self, prefill_name="", prefill_strength=""):
         self.clear_widgets()
@@ -2766,14 +3203,8 @@ class CabinetFormSheet(ModalView):
         card = Card(radius=22, orientation="vertical",
                     padding=(dp(16), dp(12)), spacing=dp(7))
 
-        head = BoxLayout(size_hint_y=None, height=dp(26))
-        head.add_widget(txt(t("cab_add", lang), 16, PAL["ink"], True))
-        x = RoundedButton("X", bg=PAL["track"], fg=PAL["muted"], fs=12,
-                          size_hint=(None, None), size=(dp(34), dp(30)),
-                          radius=15)
-        x.bind(on_release=lambda *_: self.dismiss())
-        head.add_widget(x)
-        card.add_widget(head)
+        card.add_widget(sheet_head(t("cab_add", lang), self, fs=16,
+                                   height=dp(26)))
 
         def field(label, hint="", prefill=""):
             box = BoxLayout(orientation="vertical", spacing=dp(2),
@@ -2813,6 +3244,7 @@ class CabinetFormSheet(ModalView):
                              height=dp(46), radius=23)
         save.bind(on_release=lambda *_: self._save())
         card.add_widget(save)
+        self._sheet_card = card
         self.add_widget(card)
 
     def _save(self):
@@ -2839,6 +3271,7 @@ class CabinetFormSheet(ModalView):
         app.expiry_scr.refresh()
         app.home.refresh()
         self.dismiss()
+        app.toast(t("cab_added", lang))
 
 
 # =====================================================================
@@ -2900,7 +3333,7 @@ class ExpiryScreen(ScreenBase):
                     q = int(it.quantity) if it.quantity == int(it.quantity) \
                         else it.quantity
                     line += f"  •  {q} {it.quantity_unit or ''}"
-                c = Card(size_hint_y=None, height=dp(44),
+                c = Card(size_hint_y=None, height=dp(46),
                          padding=(dp(14), 0))
                 c.add_widget(txt(line, 12, PAL["ink"], wrap=False))
                 sec.add_widget(c)
@@ -2909,6 +3342,7 @@ class ExpiryScreen(ScreenBase):
         box.add_widget(text_card(t("exp_dash", lang),
                                  t("exp_dispose_note", lang),
                                  title_color=PAL["danger"]))
+        stagger_children(box)
 
 
 # =====================================================================
@@ -2958,8 +3392,8 @@ class FamilyScreen(ScreenBase):
         for m in members:
             n_rem = len([r for r in reminders if r.member_id == m.id])
             card = Card(orientation="horizontal", size_hint_y=None,
-                        height=dp(60), padding=(dp(12), 0), spacing=dp(10))
-            card.add_widget(Avatar(m.name[:1].upper(), size=dp(38),
+                        height=dp(64), padding=(dp(12), 0), spacing=dp(10))
+            card.add_widget(Avatar(m.name[:1].upper(), size=dp(40),
                                    pos_hint={"center_y": .5}))
             col = BoxLayout(orientation="vertical")
             col.add_widget(txt(m.name + (f"  ({m.relation})"
@@ -2970,24 +3404,19 @@ class FamilyScreen(ScreenBase):
             card.add_widget(col)
             delb = RoundedButton(t("cab_delete2", lang), bg=PAL["danger_soft"],
                                  fg=PAL["danger"], fs=9.5,
-                                 size_hint=(None, None), size=(dp(80), dp(30)),
-                                 radius=15, pos_hint={"center_y": .5})
+                                 size_hint=(None, None), size=(dp(82), dp(32)),
+                                 radius=16, pos_hint={"center_y": .5})
             delb.bind(on_release=lambda *_x, mm=m:
                       (db.delete_family_member(self.app.conn, mm.id),
-                       self.refresh(), self.app.reminder_scr.refresh()))
+                       self.refresh(), self.app.reminder_scr.refresh(),
+                       self.app.toast(t("deleted_done", lang))))
             card.add_widget(delb)
             box.add_widget(card)
+        stagger_children(box)
 
 
-class FamilyFormSheet(ModalView):
-    def __init__(self, app, **kw):
-        super().__init__(**kw)
-        self.app = app
-        self.size_hint = (1, None)
-        self.height = dp(300)
-        self.background = ""
-        self.anchor_y = "bottom"
-        self.auto_dismiss = True
+class FamilyFormSheet(BottomSheet):
+    SHEET_HEIGHT = dp(300)
 
     def refresh_ui(self):
         self.clear_widgets()
@@ -2995,14 +3424,8 @@ class FamilyFormSheet(ModalView):
         card = Card(radius=22, orientation="vertical",
                     padding=(dp(16), dp(12)), spacing=dp(8))
 
-        head = BoxLayout(size_hint_y=None, height=dp(26))
-        head.add_widget(txt(t("fam_add", lang), 16, PAL["ink"], True))
-        x = RoundedButton("X", bg=PAL["track"], fg=PAL["muted"], fs=12,
-                          size_hint=(None, None), size=(dp(34), dp(30)),
-                          radius=15)
-        x.bind(on_release=lambda *_: self.dismiss())
-        head.add_widget(x)
-        card.add_widget(head)
+        card.add_widget(sheet_head(t("fam_add", lang), self, fs=16,
+                                   height=dp(26)))
 
         self.name_in = RoundedInput(hint_text=t("fam_name", lang),
                                     font_size=dp(14), multiline=False,
@@ -3018,6 +3441,7 @@ class FamilyFormSheet(ModalView):
                              height=dp(46), radius=23)
         save.bind(on_release=lambda *_: self._save())
         card.add_widget(save)
+        self._sheet_card = card
         self.add_widget(card)
 
     def _save(self):
@@ -3030,6 +3454,7 @@ class FamilyFormSheet(ModalView):
                              self.rel_in.text.strip() or None)
         app.family.refresh()
         self.dismiss()
+        app.toast(t("member_added", lang))
 
 
 # =====================================================================
@@ -3064,6 +3489,7 @@ class AuthScreen(ScreenBase):
         box.add_widget(text_card(t("auth_title", lang),
                                  format_authenticity_checklist(lang),
                                  title_color=PAL["primary"]))
+        stagger_children(box)
 
 
 # =====================================================================
@@ -3106,6 +3532,7 @@ class StorageScreen(ScreenBase):
             box.add_widget(text_card(t("stor_from_cabinet", lang),
                                      "\n".join(lines),
                                      title_color=PAL["primary"]))
+        stagger_children(box)
 
 
 # =====================================================================
@@ -3187,6 +3614,7 @@ class AboutScreen(ScreenBase):
         box.add_widget(txt("Medicine Assistant  •  " + APP_VERSION
                            + "  •  SIH demo build", 10, PAL["muted"],
                            halign="center", size_hint_y=None, height=dp(28)))
+        stagger_children(box)
 
 
 if __name__ == "__main__":
